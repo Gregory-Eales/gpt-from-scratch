@@ -1,6 +1,10 @@
 import numpy as np
 import torch
 
+from torch.nn import functional as F
+
+import math
+
 import torch.nn as nn
 torch.manual_seed(1337)
 
@@ -36,39 +40,65 @@ def load_dataset(path='data/data.txt'):
     text = open(path, 'r').read()
 
 
-class AttentionHead(nn.Module):
-
-    def __init__(self) -> None:
-        super().__init__()
-
-        # how to determine the dims
-        self.q = torch.nn.Linear()
-        self.k = torch.nn.Linear()
-        self.v = torch.nn.Linear()
-
-        self.linear = torch.nn.Linear()
-
-    def forward(self, x):
-
-        q = self.q(x)
-        k = self.k(x)
-        v = self.v(x)
-
-        scores = torch.softmax( q.dot(k) / torch.sqrt(x.shape[0]))
-
-        out = v.dot(scores)
-
-        self.linear(out)
-
-        return out
-
-
-class Block():
-    
-    # is this the full encoder?
+class Config(object):
 
     def __init__(self):
-        pass
+        self.N
 
-if __name__ == "__main__":
+
+class CausalSelfAttention(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+
+        self.attn_dropout = nn.Dropout(config.attn_dropout)
+
+        self.res_dropout = nn.Dropout(config.res_dropout)
+
+        # not sure how this works yet...
+        self.register_buffer("bias", torch.tril(
+            torch.ones(
+                config.block_size,
+                config.block_size
+            )).view(1, 1, config.block_size, config.block_size)
+        )
+
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+
+    def forward(self, x):
+        B, T, C = x.size()
+
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        att = self.attn_dropout(att)
+        y = att @ v 
+        y = y.transpose(1, 2).contiguous().view(B, T, C) 
+
+        y = self.res_dropout(self.c_proj(y))
+        return y
+
+
+
+class Block(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.l1 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config)
+        self.l2 = nn.LayerNorm(config.n_embd)
+
+
+ if __name__ == "__main__":
     pass
